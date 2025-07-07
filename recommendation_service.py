@@ -3,9 +3,12 @@ import logging
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import pandas as pd
+import requests
 
 logger = logging.getLogger("uvicorn.error")
 
+features_store_url = "http://127.0.0.1:8010"
+events_store_url = "http://127.0.0.1:8020"
 
 class Recommendations:
 
@@ -52,7 +55,39 @@ class Recommendations:
         for name, value in self._stats.items():
             logger.info(f"{name:<30} {value} ")
 
-rec_store = Recommendations()            
+
+class SimilarItems:
+
+    def __init__(self):
+
+        self._similar_items = None
+
+    def load(self, path, **kwargs):
+        """
+        Загружаем данные из файла
+        """
+
+        logger.info(f"Loading data, type: {type}")
+        self._similar_items = pd.read_parquet(path)
+        #self._similar_items = # ваш код здесь #
+        logger.info(f"Loaded")
+
+    def get(self, item_id: int, k: int = 10):
+        """
+        Возвращает список похожих объектов
+        """
+        try:
+            #i2i = self._similar_items.loc[item_id].head(k)
+            i2i = self._similar_items[self._similar_items["item_id_1"] == item_id].head(k)
+            i2i = i2i[["item_id_2", "score"]].to_dict(orient="list")
+        except KeyError:
+            logger.error("No recommendations found")
+            i2i = {"item_id_2": [], "score": {}}
+
+        return i2i
+
+sim_items_store = SimilarItems()
+rec_store = Recommendations()     
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -96,3 +131,58 @@ async def recommendations(user_id: int, k: int = 100):
 
     return {"recs": recs}
 
+
+# @app.post("/recommendations_online")
+# async def recommendations_online(user_id: int, k: int = 100):
+#     """
+#     Возвращает список онлайн-рекомендаций длиной k для пользователя user_id
+#     """
+
+#     headers = {"Content-type": "application/json", "Accept": "text/plain"}
+
+#     # получаем последнее событие пользователя
+#     params = {"user_id": user_id, "k": 1}
+#     resp = requests.post(events_store_url + "/get", headers=headers, params=params)
+#     events = resp.json()
+#     events = events["events"]
+
+#     # получаем список похожих объектов
+#     if len(events) > 0:
+#         item_id = events[0]
+#         params = {"item_id": item_id, "k": k}
+#         item_similar_items = sim_items_store.get(params)
+#         recs = item_similar_items[:k]
+#     else:
+#         recs = []
+
+#     return {"recs": recs}
+
+@app.post("/recommendations_online")
+async def recommendations_online(user_id: int, k: int = 100):
+    try:
+        # Получаем последнее событие пользователя
+        resp = requests.get(
+            f"{events_store_url}/get",
+            params={"user_id": user_id, "k": 1},
+            timeout=5
+        )
+        resp.raise_for_status()
+        events_data = resp.json()
+        
+        if not events_data or "events" not in events_data:
+            return {"recs": []}
+
+        events = events_data["events"]
+        if not events:
+            return {"recs": []}
+
+        # Получаем похожие товары
+        similar_items = sim_items_store.get(events[0], k)
+        return {"recs": similar_items.get("item_id_2", [])[:k]}
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error: {str(e)}")
+        return {"recs": []}
+    except Exception as e:
+        logger.error(f"Internal error: {str(e)}")
+        return {"recs": []}
