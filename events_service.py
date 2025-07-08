@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+import logging
+logger = logging.getLogger("uvicorn.error")
 
 class EventStore:
 
@@ -42,7 +44,8 @@ async def get(user_id: int, k: int = 10):
     """
     Возвращает список последних k событий для пользователя user_id
     """
-
+    
     events = events_store.get(user_id, k)
+    logger.info(events)
 
     return {"events": events}
